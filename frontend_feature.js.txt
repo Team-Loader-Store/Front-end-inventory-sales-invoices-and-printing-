@@ -1,0 +1,16 @@
+// Original frontend excerpts from static/index.html; depends on app global state.
+
+function sale(){const sub=inv.items.reduce((a,i)=>a+i.q*i.price,0),tax=Math.round((sub-inv.disc)*.14),tot=sub-inv.disc+tax;
+return`<div class="row"><h2 style="font-size:22px">فاتورة مبيعات</h2><span class="bd o">SI-00${13+I.length-5}</span></div>${voiceCard()}
+<div class="card"><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:12px"><label>العميل<br><select onchange="inv.cust=this.value" style="width:100%">${C.map(c=>`<option ${c.name==inv.cust?'selected':''}>${c.name}</option>`).join('')}</select></label><label>التاريخ<br><input type="date" value="2026-10-13" style="width:100%"></label></div>
+<div class="row noprint"><select id="ps" style="flex:1">${P.map((p,i)=>`<option value="${i}">${p.n} (متاح ${p.q})</option>`).join('')}</select><input id="pq" type="number" min="1" value="1" style="width:80px"><button class="btn" onclick="addI()">إضافة للفاتورة</button></div>
+<div class="tw"><table><tr><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th><th></th></tr>${inv.items.map((x,i)=>`<tr><td>${x.n}</td><td>${x.q}</td><td>${x.price}</td><td>${x.q*x.price}</td><td><button class="lk noprint" style="color:var(--red)" onclick="inv.items.splice(${i},1);draw()">✕</button></td></tr>`).join('')||'<tr><td colspan=5 class="empty">الفاتورة فارغة. اختر صنفًا وأضفه.</td></tr>'}</table></div>
+<div class="tot"><div>المجموع الفرعي<span>${sub}</span></div><div>الخصم<input type="number" min="0" value="${inv.disc}" onchange="inv.disc=+this.value;draw()" style="width:100px"></div><div>الضريبة 14%<span>${tax}</span></div><div class="f">الإجمالي<span>${fm(tot)}</span></div></div>
+<div class="row noprint" style="margin-top:14px"><button class="btn" onclick="save(${tot})">حفظ الفاتورة</button><button class="btn g" onclick="window.print()">طباعة</button></div></div>
+<div class="card" style="margin-top:12px"><h2>آخر الفواتير</h2><div class="tw"><table><tr><th>الرقم</th><th>العميل</th><th>التاريخ</th><th>المبلغ</th></tr>${I.map(i=>`<tr><td>${i.no}</td><td>${i.cust}</td><td>${i.date}</td><td>${fm(i.total)}</td></tr>`).join('')}</table></div></div>`}
+
+
+function addI(){const p=P[$('#ps').value],n=+$('#pq').value,ex=inv.items.find(x=>x.n==p.n),have=(ex?ex.q:0)+n;if(have>p.q)return toast('الكمية أكبر من المتاح بالمخزون');ex?ex.q=have:inv.items.push({n:p.n,q:n,price:p.price});draw()}
+
+
+async function save(t){if(!inv.items.length)return toast('أضف صنفًا واحدًا على الأقل');try{const r=await api('POST','/invoices',{cust:inv.cust,items:inv.items,disc:inv.disc});await loadAll();inv={cust:inv.cust,items:[],disc:0};draw();toast('تم حفظ الفاتورة '+r.no+' وتحديث المخزون')}catch(er){toast(er.message)}}

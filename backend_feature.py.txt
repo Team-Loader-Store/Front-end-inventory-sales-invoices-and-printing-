@@ -1,0 +1,72 @@
+# Original backend excerpts from server.py; these are methods in their original class context.
+
+    def invoice(s,c,b):
+        items=b.get('items') or [];disc=max(0.0,float(b.get('disc') or 0))
+        if not items: raise ApiErr(400,'أضف صنفًا واحدًا على الأقل')
+        c.execute('begin immediate');sub=0;rows=[]
+        for it in items:
+            p=c.execute('select * from products where n=?',(it.get('n'),)).fetchone();q=int(it.get('q',0))
+            if not p or q<1: raise ApiErr(400,'صنف غير صحيح')
+            if p['q']<q: raise ApiErr(400,f"المتاح من {p['n']} هو {int(p['q'])} فقط")
+            sub+=q*p['price'];rows.append((p['id'],p['n'],q,p['price']))
+        total=sub-disc+round((sub-disc)*0.14)
+        cur=c.execute("insert into invoices(no,cust,date,total,disc) values('',?,?,?,?)",(str(b.get('cust',''))[:100],datetime.date.today().isoformat(),total,disc));i=cur.lastrowid
+        c.execute('update invoices set no=? where id=?',('SI-%04d'%i,i))
+        for pid,n,q,pr in rows:
+            c.execute('insert into invoice_items(inv_id,n,q,price) values(?,?,?,?)',(i,n,q,pr));c.execute('update products set q=q-? where id=?',(q,pid))
+        c.commit();s.out(201,{'id':i,'no':'SI-%04d'%i,'total':total})
+
+    def route(s,c,m,P,b):
+        e=P[0]
+        if e=='login' and m=='POST':
+            u=c.execute('select * from users where email=?',(str(b.get('email','')).lower(),)).fetchone()
+            if not u or not chk(str(b.get('pass','')),u['pass']): raise ApiErr(401,'البريد أو كلمة المرور غير صحيحة')
+            if u['st']=='pending': raise ApiErr(403,'حسابك قيد موافقة المدير')
+            if (u['role']=='مدير')!=(b.get('role')=='manager'): raise ApiErr(403,'اختر نوع الدخول الصحيح (مدير / موظف)')
+            t=secrets.token_hex(24);c.execute('insert into sessions values(?,?)',(t,u['id']));c.commit()
+            return s.out(200,{'id':u['id'],'name':u['name'],'email':u['email'],'role':u['role']},f'sid={t}; HttpOnly; SameSite=Strict; Path=/')
+        if e=='register' and m=='POST':
+            n,em,pw=str(b.get('name','')).strip(),str(b.get('email','')).strip().lower(),str(b.get('pass',''))
+            if len(n)<3 or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$',em) or len(pw)<6 or b.get('role') not in ROLES: raise ApiErr(400,'بيانات التسجيل غير صحيحة')
+            if c.execute('select 1 from users where email=?',(em,)).fetchone(): raise ApiErr(409,'هذا البريد مسجل بالفعل')
+            c.execute("insert into users(name,email,phone,pass,role,st) values(?,?,?,?,?,'pending')",(n,em,str(b.get('phone',''))[:20],hp(pw),b['role']));c.commit();return s.out(201,{'ok':True})
+        if e=='forgot' and m=='POST': return s.out(200,{'ok':True})
+        u=s.me(c)
+        if e=='logout': 
+            c.execute('delete from sessions where uid=?',(u['id'],)) if u else 0;c.commit();return s.out(200,{'ok':True},'sid=; Max-Age=0; Path=/')
+        if not u: raise ApiErr(401,'سجّل الدخول أولًا')
+        mgr=u['role']=='مدير'
+        if e=='me': return s.out(200,{'id':u['id'],'name':u['name'],'email':u['email'],'role':u['role']})
+        if e=='users':
+            if not mgr: raise ApiErr(403,'غير مسموح')
+            if m=='GET': return s.out(200,[dict(r) | {'pass':None} for r in c.execute('select id,name,email,role,st from users order by id')])
+            if m=='POST' and len(P)==3 and P[2]=='approve': c.execute("update users set st='' where id=?",(P[1],));c.commit();return s.out(200,{'ok':True})
+            raise ApiErr(404,'غير موجود')
+        if not mgr:
+            pm=EMP.get(e)
+            if not pm or (m!='GET' and pm=='r'): raise ApiErr(403,'ليس لديك صلاحية')
+        if e=='product_images':
+            if m=='GET': return s.out(200,[dict(r) for r in c.execute('select * from product_images')])
+            if m=='PUT':
+                th,ft=str(b.get('thumb',''))[:60000],str(b.get('feat',''))[:30000]
+                if not th.startswith('data:image/') or not ft.startswith('['): raise ApiErr(400,'صورة غير صحيحة')
+                c.execute('insert into product_images(product_id,thumb,feat) values(?,?,?) on conflict(product_id) do update set thumb=excluded.thumb,feat=excluded.feat',(P[1],th,ft));c.commit();return s.out(200,{'ok':True})
+            if m=='DELETE': c.execute('delete from product_images where product_id=?',(P[1],));c.commit();return s.out(200,{'ok':True})
+            raise ApiErr(405,'غير مسموح')
+        if e=='invoices':
+            if m=='GET': return s.out(200,[dict(r) for r in c.execute('select id,no,cust,date,total from invoices order by id desc')])
+            if m=='POST': return s.invoice(c,b)
+            raise ApiErr(405,'غير مسموح')
+        if e not in ENT: raise ApiErr(404,'غير موجود')
+        cols=ENT[e]
+        if m=='GET': return s.out(200,[dict(r) for r in c.execute(f'select * from {e} order by id')])
+        if m in('POST','PUT'):
+            try: v=[(float(b[k]) if k in NUM else str(b[k])[:200]) for k in cols]
+            except Exception: raise ApiErr(400,'تأكد من تعبئة كل الحقول بشكل صحيح')
+            q=','.join(f'"{k}"' for k in cols)
+            if m=='POST': c.execute(f'insert into {e}({q}) values({",".join("?"*len(cols))})',v)
+            else: c.execute(f'update {e} set '+','.join(f'"{k}"=?' for k in cols)+' where id=?',v+[P[1]])
+            c.commit();return s.out(200,{'ok':True})
+        if m=='DELETE':
+            if e=='products': c.execute('delete from product_images where product_id=?',(P[1],))
+            c.execute(f'delete from {e} where id=?',(P[1],));c.commit();return s.out(200,{'ok':True})
